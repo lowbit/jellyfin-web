@@ -20,6 +20,9 @@ import { useHomeSectionProviders } from 'hooks/api/useHomeSectionProviders';
 import globalize from 'lib/globalize';
 import type { HomeSectionConfigDto, HomeSectionProviderDto } from 'types/homeSections';
 
+/** How many bound items a row names before it switches to a count. */
+const MAX_CAPTION_NAMES = 3;
+
 /** A section being edited, with an id that survives reordering. */
 interface EditableHomeSection extends HomeSectionConfigDto {
     EditorId: string;
@@ -56,11 +59,9 @@ export const Component = () => {
 
     const genreKind = getProvider(HomeSectionKey.Genre)?.ItemKind;
 
-    // What the server can build, less the genres, which are ticked below, and less anything bound
-    // to a kind of item this server has none of.
+    // What the server can build, less anything bound to a kind of item this server has none of.
     const availableProviders = useMemo(() => (providers ?? []).filter(provider => (
-        provider.Key !== HomeSectionKey.Genre
-            && (!provider.ItemKind || sectionItems?.[provider.ItemKind]?.length)
+        !provider.ItemKind || sectionItems?.[provider.ItemKind]?.length
     )), [ providers, sectionItems ]);
 
     useEffect(() => {
@@ -71,11 +72,15 @@ export const Component = () => {
 
     const genres = useMemo(() => (genreKind && sectionItems?.[genreKind]) || [], [ genreKind, sectionItems ]);
 
-    const pinnedGenreIds = useMemo(() => new Set(
-        sections
-            .filter(section => section.Key === HomeSectionKey.Genre && section.ItemId)
-            .map(section => section.ItemId as string)
+    // The genre row narrowed by the checkboxes, and the genres it is narrowed to. With the row
+    // absent there is nothing to narrow; with it present and nothing ticked it shows every genre.
+    const genreSectionIndex = useMemo(() => (
+        sections.findIndex(section => section.Key === HomeSectionKey.Genre)
     ), [ sections ]);
+
+    const chosenGenreIds = useMemo(() => new Set(
+        genreSectionIndex < 0 ? [] : sections[genreSectionIndex].ItemIds
+    ), [ genreSectionIndex, sections ]);
 
     const newProvider = getProvider(newKey);
     const newProviderItems = useMemo(() => (
@@ -87,8 +92,24 @@ export const Component = () => {
     }, [ newProviderItems ]);
 
     const getSectionItemName = useCallback((section: HomeSectionConfigDto) => {
-        const kind = getProvider(section.Key)?.ItemKind;
-        return (kind && sectionItems?.[kind]?.find(item => item.Id === section.ItemId)?.Name) ?? undefined;
+        const provider = getProvider(section.Key);
+        if (!provider?.ItemKind) return undefined;
+
+        const items = sectionItems?.[provider.ItemKind] ?? [];
+
+        if (provider.AllowsMultipleItems) {
+            if (!section.ItemIds.length) return globalize.translate('None');
+            if (items.length && items.every(item => !!item.Id && section.ItemIds.includes(item.Id))) {
+                return globalize.translate('All');
+            }
+        }
+
+        const names = section.ItemIds
+            .map(itemId => items.find(item => item.Id === itemId)?.Name)
+            .filter(Boolean);
+        const rest = names.length - MAX_CAPTION_NAMES;
+
+        return (rest > 0 ? `${names.slice(0, MAX_CAPTION_NAMES).join(', ')}, +${rest}` : names.join(', ')) || undefined;
     }, [ getProvider, sectionItems ]);
 
     const onMove = useCallback((index: number, offset: number) => {
@@ -118,26 +139,17 @@ export const Component = () => {
         )));
     }, []);
 
-    const onToggleGenre = useCallback((genreId: string, isPinned: boolean) => {
-        setSections(current => {
-            if (!isPinned) {
-                return current.filter(section => (
-                    section.Key !== HomeSectionKey.Genre || section.ItemId !== genreId
-                ));
-            }
+    const onToggleGenre = useCallback((genreId: string, isChosen: boolean) => {
+        setSections(current => current.map(section => withGenre(section, genreId, isChosen)));
+    }, []);
 
-            return [
-                ...current,
-                {
-                    EditorId: createEditorId(),
-                    Key: HomeSectionKey.Genre,
-                    ItemId: genreId,
-                    MaxItems: null,
-                    Active: true
-                }
-            ];
-        });
-    }, [ createEditorId ]);
+    const onToggleAllGenres = useCallback((chooseAll: boolean) => {
+        const everyGenre = genres.map(genre => genre.Id).filter((id): id is string => !!id);
+
+        setSections(current => current.map(section => (
+            section.Key === HomeSectionKey.Genre ? { ...section, ItemIds: chooseAll ? everyGenre : [] } : section
+        )));
+    }, [ genres ]);
 
     const onNewKeyChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
         setNewKey(event.target.value);
@@ -148,22 +160,30 @@ export const Component = () => {
     }, []);
 
     const onAdd = useCallback(() => {
+        // A section that takes several items starts with all of them, so adding it needs no more.
+        let itemIds: string[] = [];
+        if (newProvider?.ItemKind && newProvider.AllowsMultipleItems) {
+            itemIds = newProviderItems.map(item => item.Id).filter((id): id is string => !!id);
+        } else if (newProvider?.ItemKind) {
+            itemIds = [ newItemId ];
+        }
+
         setSections(current => [
             ...current,
             {
                 EditorId: createEditorId(),
                 Key: newKey,
-                ItemId: newProvider?.ItemKind ? newItemId : null,
+                ItemIds: itemIds,
                 MaxItems: null,
                 Active: true
             }
         ]);
-    }, [ createEditorId, newItemId, newKey, newProvider ]);
+    }, [ createEditorId, newItemId, newKey, newProvider, newProviderItems ]);
 
     const onSave = useCallback(() => {
         updateDefaultHomeSections.mutate(sections.map(section => ({
             Key: section.Key,
-            ItemId: section.ItemId,
+            ItemIds: section.ItemIds,
             MaxItems: section.MaxItems,
             Active: section.Active
         })));
@@ -205,11 +225,14 @@ export const Component = () => {
                                 </Alert>
                             )}
 
-                            <HomeSectionGenres
-                                genres={genres}
-                                pinnedIds={pinnedGenreIds}
-                                onToggle={onToggleGenre}
-                            />
+                            {genreSectionIndex >= 0 && (
+                                <HomeSectionGenres
+                                    genres={genres}
+                                    chosenIds={chosenGenreIds}
+                                    onToggle={onToggleGenre}
+                                    onToggleAll={onToggleAllGenres}
+                                />
+                            )}
 
                             <Stack direction='row' spacing={2} alignItems='center'>
                                 <TextField
@@ -226,7 +249,7 @@ export const Component = () => {
                                     ))}
                                 </TextField>
 
-                                {newProvider?.ItemKind && (
+                                {newProvider?.ItemKind && !newProvider.AllowsMultipleItems && (
                                     <TextField
                                         select
                                         label={newProvider.Name}
@@ -244,7 +267,7 @@ export const Component = () => {
 
                                 <Button
                                     onClick={onAdd}
-                                    disabled={!newKey || (!!newProvider?.ItemKind && !newItemId)}
+                                    disabled={!newKey || (!!newProvider?.ItemKind && !newProvider.AllowsMultipleItems && !newItemId)}
                                 >
                                     {globalize.translate('Add')}
                                 </Button>
@@ -281,6 +304,14 @@ export const Component = () => {
         </Page>
     );
 };
+
+/** Adds or removes one genre from the genre row, leaving every other row alone. */
+function withGenre(section: EditableHomeSection, genreId: string, isChosen: boolean) {
+    if (section.Key !== HomeSectionKey.Genre) return section;
+
+    const itemIds = section.ItemIds.filter(id => id !== genreId);
+    return { ...section, ItemIds: isChosen ? [ ...itemIds, genreId ] : itemIds };
+}
 
 /** A row from a plugin that has since been removed still has to be shown as something. */
 function getProviderName(provider: HomeSectionProviderDto | undefined, key: string) {

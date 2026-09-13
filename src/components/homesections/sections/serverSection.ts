@@ -12,14 +12,6 @@ import { type HomeSectionDto, HomeSectionViewType } from 'types/homeSections';
 
 import type { SectionContainerElement, SectionOptions } from './section';
 
-/** The item types the parameterised sections are bound to, so their heading can link somewhere. */
-const PARENT_ITEM_TYPES: Record<string, string> = {
-    [HomeSectionKey.PinnedCollection]: 'BoxSet',
-    [HomeSectionKey.Genre]: 'Genre',
-    // Whatever was watched, which the details page handles for any kind of item.
-    [HomeSectionKey.BecauseYouWatched]: 'Movie'
-};
-
 function getShape(viewType: HomeSectionViewType, enableOverflow: boolean) {
     switch (viewType) {
         case HomeSectionViewType.Landscape:
@@ -36,11 +28,11 @@ function getSectionUrl(section: HomeSectionDto, serverId: string) {
         return appRouter.getRouteUrl('nextup', { serverId });
     }
 
-    const itemType = PARENT_ITEM_TYPES[section.Key];
-    if (section.ParentId && itemType) {
+    // The server says what the row is about, so a row from a plugin links like a built-in one.
+    if (section.ParentId && section.ParentType) {
         return appRouter.getRouteUrl({
             Id: section.ParentId,
-            Type: itemType,
+            Type: section.ParentType,
             ServerId: serverId
         });
     }

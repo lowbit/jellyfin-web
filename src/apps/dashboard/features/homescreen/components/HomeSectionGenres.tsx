@@ -10,18 +10,18 @@ import globalize from 'lib/globalize';
 
 interface HomeSectionGenreProps {
     genre: BaseItemDto;
-    isPinned: boolean;
-    onToggle: (genreId: string, isPinned: boolean) => void;
+    isChosen: boolean;
+    onToggle: (genreId: string, isChosen: boolean) => void;
 }
 
-const HomeSectionGenre: FC<HomeSectionGenreProps> = ({ genre, isPinned, onToggle }) => {
+const HomeSectionGenre: FC<HomeSectionGenreProps> = ({ genre, isChosen, onToggle }) => {
     const onChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
         if (genre.Id) onToggle(genre.Id, event.target.checked);
     }, [ genre.Id, onToggle ]);
 
     return (
         <FormControlLabel
-            control={<Checkbox checked={isPinned} onChange={onChange} />}
+            control={<Checkbox checked={isChosen} onChange={onChange} />}
             label={genre.Name}
             sx={{ width: '14em' }}
         />
@@ -30,12 +30,21 @@ const HomeSectionGenre: FC<HomeSectionGenreProps> = ({ genre, isPinned, onToggle
 
 interface HomeSectionGenresProps {
     genres: BaseItemDto[];
-    pinnedIds: Set<string>;
-    onToggle: (genreId: string, isPinned: boolean) => void;
+    chosenIds: Set<string>;
+    onToggle: (genreId: string, isChosen: boolean) => void;
+    /** Every genre on offer, or none. */
+    onToggleAll: (chooseAll: boolean) => void;
 }
 
-/** The genres that have a row, as a list rather than one dropdown choice at a time. */
-const HomeSectionGenres: FC<HomeSectionGenresProps> = ({ genres, pinnedIds, onToggle }) => {
+/** Which genres get a row, each ticked one in its own. */
+const HomeSectionGenres: FC<HomeSectionGenresProps> = ({ genres, chosenIds, onToggle, onToggleAll }) => {
+    const chosenCount = genres.filter(genre => !!genre.Id && chosenIds.has(genre.Id)).length;
+    const allChosen = genres.length > 0 && chosenCount === genres.length;
+
+    const onAllChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+        onToggleAll(event.target.checked);
+    }, [ onToggleAll ]);
+
     if (!genres.length) {
         return null;
     }
@@ -46,12 +55,24 @@ const HomeSectionGenres: FC<HomeSectionGenresProps> = ({ genres, pinnedIds, onTo
                 {globalize.translate('Genres')}
             </Typography>
 
+            <FormControlLabel
+                control={(
+                    <Checkbox
+                        checked={allChosen}
+                        indeterminate={chosenCount > 0 && !allChosen}
+                        onChange={onAllChange}
+                    />
+                )}
+                label={globalize.translate('SelectAll')}
+                sx={{ marginBottom: 1 }}
+            />
+
             <FormGroup row>
                 {genres.map(genre => (
                     <HomeSectionGenre
                         key={genre.Id}
                         genre={genre}
-                        isPinned={!!genre.Id && pinnedIds.has(genre.Id)}
+                        isChosen={!!genre.Id && chosenIds.has(genre.Id)}
                         onToggle={onToggle}
                     />
                 ))}

@@ -18,6 +18,5 @@ export enum HomeSectionKey {
     LiveTv = 'livetv',
     ResumeBook = 'resumebook',
     PinnedCollection = 'pinnedcollection',
-    Genre = 'genre',
-    BecauseYouWatched = 'becauseyouwatched'
+    Genre = 'genre'
 }

@@ -337,27 +337,59 @@ function getProviderName(context, key) {
     return getProvider(context, key)?.Name || key;
 }
 
-/** Whether a provider's item is chosen from the dropdown rather than the genre checkboxes. */
+/** Whether a section of this kind is bound to one item, picked when it is added. */
 function usesItemSelect(context, key) {
-    return key !== HomeSectionKey.Genre && !!getProvider(context, key)?.ItemKind;
+    const provider = getProvider(context, key);
+    return !!provider?.ItemKind && !provider.AllowsMultipleItems;
 }
 
-function getSectionItemName(context, key, itemId) {
-    if (!itemId) {
-        return '';
+/** Whether a section of this kind takes any number of items, each getting a row. */
+function takesSeveralItems(context, key) {
+    const provider = getProvider(context, key);
+    return !!provider?.ItemKind && !!provider.AllowsMultipleItems;
+}
+
+function getSectionItemIds(item) {
+    const value = item.getAttribute('data-itemids');
+    return value ? value.split(',') : [];
+}
+
+/** How many bound items a row names before it switches to a count. */
+const MAX_CAPTION_NAMES = 3;
+
+/** The items of a kind this user can pick from. */
+function getOfferedItems(context, key) {
+    const kind = getProvider(context, key)?.ItemKind;
+    return context.homeSectionItems?.[kind] || [];
+}
+
+function hasEveryOfferedItem(context, key, itemIds) {
+    const offered = getOfferedItems(context, key);
+    return offered.length > 0 && offered.every(item => itemIds.includes(item.Id));
+}
+
+function getSectionItemNames(context, key, itemIds) {
+    if (takesSeveralItems(context, key)) {
+        if (!itemIds.length) return globalize.translate('None');
+        if (hasEveryOfferedItem(context, key, itemIds)) return globalize.translate('All');
     }
 
-    const kind = getProvider(context, key)?.ItemKind;
-    return context.homeSectionItems?.[kind]?.find(item => item.Id === itemId)?.Name || '';
+    const names = itemIds
+        .map(itemId => getOfferedItems(context, key).find(item => item.Id === itemId)?.Name)
+        .filter(Boolean);
+
+    const rest = names.length - MAX_CAPTION_NAMES;
+    return rest > 0 ? `${names.slice(0, MAX_CAPTION_NAMES).join(', ')}, +${rest}` : names.join(', ');
 }
 
 function getHomeSectionHtml(context, section) {
     const isActive = section.Active !== false;
-    const itemName = getSectionItemName(context, section.Key, section.ItemId);
+    const itemIds = section.ItemIds || [];
+    const itemName = getSectionItemNames(context, section.Key, itemIds);
 
     let html = '';
 
-    html += `<div class="listItem listItem-border homeSectionItem" data-key="${escapeHtml(section.Key)}" data-itemid="${section.ItemId || ''}" data-active="${isActive}">`;
+    html += `<div class="listItem listItem-border homeSectionItem" data-key="${escapeHtml(section.Key)}" data-itemids="${escapeHtml(itemIds.join(','))}" data-active="${isActive}">`;
 
     html += '<span class="material-icons listItemIcon dashboard" aria-hidden="true"></span>';
 
@@ -386,47 +418,79 @@ function renderHomeSections(context, sections) {
         .join('');
 }
 
-function renderGenreCheckboxes(context, genres, sections) {
-    const pinned = new Set(sections
-        .filter(section => section.Key === HomeSectionKey.Genre)
-        .map(section => section.ItemId));
+/** Redraws the genre checkboxes against the genre row as it now stands. */
+function refreshGenreCheckboxes(context) {
+    const kind = getProvider(context, HomeSectionKey.Genre)?.ItemKind;
+    renderGenreCheckboxes(context, context.homeSectionItems?.[kind] || []);
+}
+
+/** The row the genre checkboxes narrow, being the genre section in the layout. */
+function getGenreSectionItem(context) {
+    return context.querySelector(`.homeSectionItem[data-key="${HomeSectionKey.Genre}"]`);
+}
+
+function renderGenreCheckboxes(context, genres) {
+    const section = getGenreSectionItem(context);
+    const chosen = section ? getSectionItemIds(section) : [];
 
     const html = genres.map(genre => {
-        const checked = pinned.has(genre.Id) ? ' checked="checked"' : '';
+        const checked = chosen.includes(genre.Id) ? ' checked="checked"' : '';
 
         return `<label><input type="checkbox" is="emby-checkbox" class="chkHomeSectionGenre" data-genreid="${genre.Id}" id="chkHomeSectionGenre${genre.Id}"${checked}/><span>${escapeHtml(genre.Name)}</span></label>`;
     }).join('');
 
     context.querySelector('.homeSectionGenreList').innerHTML = html ? `<div class="checkboxList checkboxList-verticalwrap">${html}</div>` : '';
-    context.querySelector('.homeSectionGenres').classList.toggle('hide', !html);
+    context.querySelector('.chkHomeSectionGenreAll').checked = hasEveryOfferedItem(context, HomeSectionKey.Genre, chosen);
+
+    // Nothing to narrow until the layout has a genre row.
+    context.querySelector('.homeSectionGenres').classList.toggle('hide', !html || !section);
 }
 
-function toggleGenreSection(context, checkbox) {
-    const itemId = checkbox.getAttribute('data-genreid');
-    const list = context.querySelector('.homeSectionList');
-    const existing = list.querySelector(`.homeSectionItem[data-key="${HomeSectionKey.Genre}"][data-itemid="${itemId}"]`);
-
-    if (!checkbox.checked) {
-        existing?.remove();
+/** Writes a genre row's list back to its row in the layout and redraws what depends on it. */
+function setGenreItemIds(context, itemIds) {
+    const section = getGenreSectionItem(context);
+    if (!section) {
         return;
     }
 
-    if (!existing) {
-        list.insertAdjacentHTML('beforeend', getHomeSectionHtml(context, {
-            Key: HomeSectionKey.Genre,
-            ItemId: itemId,
-            MaxItems: null,
-            Active: true
-        }));
+    section.setAttribute('data-itemids', itemIds.join(','));
+    section.querySelector('.listItemBodyText.secondary')?.remove();
+
+    const name = getSectionItemNames(context, HomeSectionKey.Genre, itemIds);
+    if (name) {
+        section.querySelector('.listItemBody')
+            .insertAdjacentHTML('beforeend', `<div class="listItemBodyText secondary">${escapeHtml(name)}</div>`);
     }
+
+    refreshGenreCheckboxes(context);
+}
+
+/** Adds or removes one genre from the genre row. */
+function toggleGenre(context, checkbox) {
+    const section = getGenreSectionItem(context);
+    if (!section) {
+        return;
+    }
+
+    const itemId = checkbox.getAttribute('data-genreid');
+    const itemIds = getSectionItemIds(section).filter(id => id !== itemId);
+
+    if (checkbox.checked) {
+        itemIds.push(itemId);
+    }
+
+    setGenreItemIds(context, itemIds);
+}
+
+/** Every genre on offer, or none. */
+function toggleAllGenres(context, checkbox) {
+    setGenreItemIds(context, checkbox.checked ? getOfferedItems(context, HomeSectionKey.Genre).map(item => item.Id) : []);
 }
 
 function renderSectionTypeOptions(context) {
-    // What the server can build, less the genres, which have their own control, and less anything
-    // bound to a kind of item this user has none of.
+    // What the server can build, less anything bound to a kind of item this user has none of.
     const providers = context.homeSectionProviders.filter(provider => (
-        provider.Key !== HomeSectionKey.Genre
-            && (!provider.ItemKind || context.homeSectionItems[provider.ItemKind]?.length)
+        !provider.ItemKind || context.homeSectionItems[provider.ItemKind]?.length
     ));
 
     context.querySelector('.selectHomeSectionType').innerHTML = providers
@@ -457,9 +521,9 @@ function renderHomeSectionSettings(context, sections, providers, sectionItems) {
     context.homeSectionItems = sectionItems;
 
     context.querySelector('.homeSectionsEditor').classList.remove('hide');
-    renderGenreCheckboxes(context, sectionItems[getProvider(context, HomeSectionKey.Genre)?.ItemKind] || [], sections);
     renderSectionTypeOptions(context);
     renderHomeSections(context, sections);
+    renderGenreCheckboxes(context, sectionItems[getProvider(context, HomeSectionKey.Genre)?.ItemKind] || []);
     updateSectionItemSelect(context);
 }
 
@@ -469,7 +533,7 @@ function getHomeSectionsConfig(context) {
 
         return {
             Key: item.getAttribute('data-key'),
-            ItemId: item.getAttribute('data-itemid') || null,
+            ItemIds: getSectionItemIds(item),
             MaxItems: Number.isNaN(maxItems) ? null : maxItems,
             Active: item.getAttribute('data-active') === 'true'
         };
@@ -661,12 +725,14 @@ function onHomeSectionListClick(e) {
     }
 
     if (button.classList.contains('btnSectionRemove')) {
-        if (item.getAttribute('data-key') === HomeSectionKey.Genre) {
-            const checkbox = this.options.element.querySelector(`.chkHomeSectionGenre[data-genreid="${item.getAttribute('data-itemid')}"]`);
-            if (checkbox) checkbox.checked = false;
-        }
+        const isGenres = item.getAttribute('data-key') === HomeSectionKey.Genre;
 
         item.remove();
+
+        if (isGenres) {
+            refreshGenreCheckboxes(this.options.element);
+        }
+
         return;
     }
 
@@ -687,15 +753,27 @@ function onAddHomeSection() {
     const context = this.options.element;
     const key = context.querySelector('.selectHomeSectionType').value;
 
+    // A section that takes several items starts with all of them, so adding it needs no more.
+    let itemIds = [];
+    if (usesItemSelect(context, key)) {
+        itemIds = [ context.querySelector('.selectHomeSectionItem').value ];
+    } else if (takesSeveralItems(context, key)) {
+        itemIds = getOfferedItems(context, key).map(item => item.Id);
+    }
+
     const section = {
         Key: key,
-        ItemId: usesItemSelect(context, key) ? context.querySelector('.selectHomeSectionItem').value : null,
+        ItemIds: itemIds,
         MaxItems: null,
         Active: true
     };
 
     context.querySelector('.homeSectionList')
         .insertAdjacentHTML('beforeend', getHomeSectionHtml(context, section));
+
+    if (key === HomeSectionKey.Genre) {
+        refreshGenreCheckboxes(context);
+    }
 }
 
 function resetHomeSections(instance) {
@@ -836,9 +914,15 @@ function onSubmit(e) {
 }
 
 function onChange(e) {
+    const allGenresCheckbox = dom.parentWithClass(e.target, 'chkHomeSectionGenreAll');
+    if (allGenresCheckbox) {
+        toggleAllGenres(this.options.element, allGenresCheckbox);
+        return;
+    }
+
     const genreCheckbox = dom.parentWithClass(e.target, 'chkHomeSectionGenre');
     if (genreCheckbox) {
-        toggleGenreSection(this.options.element, genreCheckbox);
+        toggleGenre(this.options.element, genreCheckbox);
         return;
     }
 

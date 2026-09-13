@@ -21,13 +21,16 @@ export interface HomeSectionDto {
     ViewType: HomeSectionViewType;
     /** The item the row is about, if any: a collection, a genre, or what was watched. */
     ParentId?: string | null;
+    /** What kind of item ParentId is, so the heading can link to it without knowing the provider. */
+    ParentType?: BaseItemKind | null;
     Items: BaseItemDto[];
 }
 
 /** A row of the home screen layout, without its items. */
 export interface HomeSectionConfigDto {
     Key: string;
-    ItemId?: string | null;
+    /** The items the section is bound to, in display order. */
+    ItemIds: string[];
     /** The maximum number of items, or null for the server default. */
     MaxItems?: number | null;
     Active: boolean;
@@ -40,6 +43,8 @@ export interface HomeSectionProviderDto {
     Name: string;
     /** The kind of item a section must be bound to, or null when it takes none. */
     ItemKind?: BaseItemKind | null;
+    /** Whether the section takes several items of that kind, one row each; none draws nothing. */
+    AllowsMultipleItems?: boolean;
 }
 
 /** Tells a client which of its home sections are out of date. */
