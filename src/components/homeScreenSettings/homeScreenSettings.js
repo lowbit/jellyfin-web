@@ -1,8 +1,13 @@
 
 import escapeHtml from 'escape-html';
 
+import { HomeSectionKey } from 'constants/homeSectionKey';
+import { getHomeSectionConfigQuery } from 'hooks/api/useHomeSectionConfig';
+import { getHomeSectionItemKinds, getHomeSectionItemsQuery } from 'hooks/api/useHomeSectionItems';
+import { getHomeSectionProvidersQuery } from 'hooks/api/useHomeSectionProviders';
 import { getUserViewsQuery } from 'hooks/api/useUserViews';
 import { ServerConnections } from 'lib/jellyfin-apiclient';
+import { getHomeSectionsApi } from 'utils/sdk/home-sections-api';
 import { queryClient } from 'utils/query/queryClient';
 
 import layoutManager from '../layoutManager';
@@ -10,16 +15,17 @@ import focusManager from '../focusManager';
 import globalize from '../../lib/globalize';
 import loading from '../loading/loading';
 import Events from '../../utils/events.ts';
-import homeSections from '../homesections/homesections';
+import confirm from '../confirm/confirm';
 import dom from '../../utils/dom';
 import '../listview/listview.scss';
+import '../../elements/emby-button/paper-icon-button-light';
+import '../../elements/emby-input/emby-input.scss';
 import '../../elements/emby-select/emby-select';
 import '../../elements/emby-checkbox/emby-checkbox';
 import toast from '../toast/toast';
 import template from './homeScreenSettings.template.html';
 import { LibraryTab } from '../../types/libraryTab.ts';
-
-const numConfigurableSections = 10;
+import './homeScreenSettings.scss';
 
 function renderViews(page, user, result) {
     let folderHtml = '';
@@ -322,25 +328,152 @@ function renderViewOrder(context, user, result) {
     context.querySelector('.viewOrderList').innerHTML = html;
 }
 
-function updateHomeSectionValues(context, userSettings) {
-    for (let i = 1; i <= numConfigurableSections; i++) {
-        const select = context.querySelector(`#selectHomeSection${i}`);
-        const defaultValue = homeSections.getDefaultSection(i - 1);
+function getProvider(context, key) {
+    return context.homeSectionProviders?.find(provider => provider.Key === key);
+}
 
-        const option = select.querySelector(`option[value="${defaultValue}"]`) || select.querySelector('option[value=""]');
+function getProviderName(context, key) {
+    // A row from a plugin that has since been removed still has to be shown as something.
+    return getProvider(context, key)?.Name || key;
+}
 
-        const userValue = userSettings.get(`homesection${i - 1}`);
+/** Whether a provider's item is chosen from the dropdown rather than the genre checkboxes. */
+function usesItemSelect(context, key) {
+    return key !== HomeSectionKey.Genre && !!getProvider(context, key)?.ItemKind;
+}
 
-        if (option) option.value = '';
-
-        if (userValue === defaultValue || !userValue) {
-            select.value = '';
-        } else {
-            select.value = userValue;
-        }
+function getSectionItemName(context, key, itemId) {
+    if (!itemId) {
+        return '';
     }
 
-    context.querySelector('.selectTVHomeScreen').value = userSettings.get('tvhome') || '';
+    const kind = getProvider(context, key)?.ItemKind;
+    return context.homeSectionItems?.[kind]?.find(item => item.Id === itemId)?.Name || '';
+}
+
+function getHomeSectionHtml(context, section) {
+    const isActive = section.Active !== false;
+    const itemName = getSectionItemName(context, section.Key, section.ItemId);
+
+    let html = '';
+
+    html += `<div class="listItem listItem-border homeSectionItem" data-key="${escapeHtml(section.Key)}" data-itemid="${section.ItemId || ''}" data-active="${isActive}">`;
+
+    html += '<span class="material-icons listItemIcon dashboard" aria-hidden="true"></span>';
+
+    html += '<div class="listItemBody">';
+    html += `<div class="listItemBodyText">${escapeHtml(getProviderName(context, section.Key))}</div>`;
+    if (itemName) {
+        html += `<div class="listItemBodyText secondary">${escapeHtml(itemName)}</div>`;
+    }
+    html += '</div>';
+
+    html += `<input type="number" class="emby-input homeSectionMaxItems" min="1" max="100" step="1" value="${section.MaxItems ?? ''}" placeholder="${globalize.translate('Default')}" title="${globalize.translate('LabelMaxItems')}" />`;
+
+    html += `<button type="button" is="paper-icon-button-light" class="btnSectionVisibility autoSize" title="${globalize.translate(isActive ? 'Hide' : 'Show')}"><span class="material-icons ${isActive ? 'visibility' : 'visibility_off'}" aria-hidden="true"></span></button>`;
+    html += `<button type="button" is="paper-icon-button-light" class="btnSectionUp btnSectionMove autoSize" title="${globalize.translate('Up')}"><span class="material-icons keyboard_arrow_up" aria-hidden="true"></span></button>`;
+    html += `<button type="button" is="paper-icon-button-light" class="btnSectionDown btnSectionMove autoSize" title="${globalize.translate('Down')}"><span class="material-icons keyboard_arrow_down" aria-hidden="true"></span></button>`;
+    html += `<button type="button" is="paper-icon-button-light" class="btnSectionRemove autoSize" title="${globalize.translate('ButtonRemove')}"><span class="material-icons delete" aria-hidden="true"></span></button>`;
+
+    html += '</div>';
+
+    return html;
+}
+
+function renderHomeSections(context, sections) {
+    context.querySelector('.homeSectionList').innerHTML = sections
+        .map(section => getHomeSectionHtml(context, section))
+        .join('');
+}
+
+function renderGenreCheckboxes(context, genres, sections) {
+    const pinned = new Set(sections
+        .filter(section => section.Key === HomeSectionKey.Genre)
+        .map(section => section.ItemId));
+
+    const html = genres.map(genre => {
+        const checked = pinned.has(genre.Id) ? ' checked="checked"' : '';
+
+        return `<label><input type="checkbox" is="emby-checkbox" class="chkHomeSectionGenre" data-genreid="${genre.Id}" id="chkHomeSectionGenre${genre.Id}"${checked}/><span>${escapeHtml(genre.Name)}</span></label>`;
+    }).join('');
+
+    context.querySelector('.homeSectionGenreList').innerHTML = html ? `<div class="checkboxList checkboxList-verticalwrap">${html}</div>` : '';
+    context.querySelector('.homeSectionGenres').classList.toggle('hide', !html);
+}
+
+function toggleGenreSection(context, checkbox) {
+    const itemId = checkbox.getAttribute('data-genreid');
+    const list = context.querySelector('.homeSectionList');
+    const existing = list.querySelector(`.homeSectionItem[data-key="${HomeSectionKey.Genre}"][data-itemid="${itemId}"]`);
+
+    if (!checkbox.checked) {
+        existing?.remove();
+        return;
+    }
+
+    if (!existing) {
+        list.insertAdjacentHTML('beforeend', getHomeSectionHtml(context, {
+            Key: HomeSectionKey.Genre,
+            ItemId: itemId,
+            MaxItems: null,
+            Active: true
+        }));
+    }
+}
+
+function renderSectionTypeOptions(context) {
+    // What the server can build, less the genres, which have their own control, and less anything
+    // bound to a kind of item this user has none of.
+    const providers = context.homeSectionProviders.filter(provider => (
+        provider.Key !== HomeSectionKey.Genre
+            && (!provider.ItemKind || context.homeSectionItems[provider.ItemKind]?.length)
+    ));
+
+    context.querySelector('.selectHomeSectionType').innerHTML = providers
+        .map(provider => `<option value="${escapeHtml(provider.Key)}">${escapeHtml(provider.Name)}</option>`)
+        .join('');
+}
+
+function updateSectionItemSelect(context) {
+    const key = context.querySelector('.selectHomeSectionType').value;
+    const provider = getProvider(context, key);
+    const select = context.querySelector('.selectHomeSectionItem');
+    const hasItem = usesItemSelect(context, key);
+
+    context.querySelector('.selectHomeSectionItemContainer').classList.toggle('hide', !hasItem);
+
+    if (!hasItem) {
+        return;
+    }
+
+    select.setLabel(provider.Name);
+    select.innerHTML = (context.homeSectionItems[provider.ItemKind] || [])
+        .map(item => `<option value="${item.Id}">${escapeHtml(item.Name)}</option>`)
+        .join('');
+}
+
+function renderHomeSectionSettings(context, sections, providers, sectionItems) {
+    context.homeSectionProviders = providers;
+    context.homeSectionItems = sectionItems;
+
+    context.querySelector('.homeSectionsEditor').classList.remove('hide');
+    renderGenreCheckboxes(context, sectionItems[getProvider(context, HomeSectionKey.Genre)?.ItemKind] || [], sections);
+    renderSectionTypeOptions(context);
+    renderHomeSections(context, sections);
+    updateSectionItemSelect(context);
+}
+
+function getHomeSectionsConfig(context) {
+    return Array.prototype.map.call(context.querySelectorAll('.homeSectionItem'), item => {
+        const maxItems = parseInt(item.querySelector('.homeSectionMaxItems').value, 10);
+
+        return {
+            Key: item.getAttribute('data-key'),
+            ItemId: item.getAttribute('data-itemid') || null,
+            MaxItems: Number.isNaN(maxItems) ? null : maxItems,
+            Active: item.getAttribute('data-active') === 'true'
+        };
+    });
 }
 
 function getPerLibrarySettingsHtml(item, user, userSettings) {
@@ -415,12 +548,13 @@ function renderPerLibrarySettings(context, user, userViews, userSettings) {
 
 function loadForm(context, user, userSettings, apiClient) {
     context.querySelector('.chkHidePlayedFromLatest').checked = user.Configuration.HidePlayedInLatest || false;
+    context.querySelector('.selectTVHomeScreen').value = userSettings.get('tvhome') || '';
 
-    updateHomeSectionValues(context, userSettings);
+    const api = ServerConnections.getApi(apiClient.serverId());
 
     const promise1 = queryClient
         .fetchQuery(getUserViewsQuery(
-            ServerConnections.getApi(apiClient.serverId()),
+            api,
             {
                 userId: user.Id,
                 includeHidden: true
@@ -428,15 +562,37 @@ function loadForm(context, user, userSettings, apiClient) {
         ));
     const promise2 = apiClient.getJSON(apiClient.getUrl(`Users/${user.Id}/GroupingOptions`));
 
-    Promise.all([promise1, promise2]).then(responses => {
-        renderViewOrder(context, user, responses[0]);
+    Promise.all([promise1, promise2])
+        .then(responses => {
+            renderViewOrder(context, user, responses[0]);
 
-        renderPerLibrarySettings(context, user, responses[0].Items, userSettings);
+            renderPerLibrarySettings(context, user, responses[0].Items, userSettings);
 
-        renderViews(context, user, responses[1]);
+            renderViews(context, user, responses[1]);
+        })
+        .catch(err => {
+            console.error('[homeScreenSettings] failed to load the form', err);
+            toast(globalize.translate('ErrorDefault'));
+        })
+        .finally(() => {
+            loading.hide();
+        });
 
-        loading.hide();
-    });
+    // The section editor stays hidden until its own data is there, so a request that fails cannot
+    // leave the page loading or save an empty layout over the one it could not read. The providers
+    // come first because they say which kinds of item there are to pick from.
+    queryClient.fetchQuery(getHomeSectionProvidersQuery(api))
+        .then(providers => Promise.all([
+            providers,
+            queryClient.fetchQuery(getHomeSectionConfigQuery(api, { userId: user.Id })),
+            queryClient.fetchQuery(getHomeSectionItemsQuery(api, { userId: user.Id, kinds: getHomeSectionItemKinds(providers) }))
+        ]))
+        .then(([ providers, sections, sectionItems ]) => {
+            renderHomeSectionSettings(context, sections, providers, sectionItems);
+        })
+        .catch(err => {
+            console.error('[homeScreenSettings] home sections are unavailable', err);
+        });
 }
 
 function onSectionOrderListClick(e) {
@@ -465,6 +621,119 @@ function onSectionOrderListClick(e) {
             }
         }
     }
+}
+
+function moveHomeSection(item, isDown) {
+    const sibling = isDown ? item.nextSibling : item.previousSibling;
+
+    if (!sibling) {
+        return;
+    }
+
+    item.parentNode.removeChild(item);
+
+    if (isDown) {
+        sibling.parentNode.insertBefore(item, sibling.nextSibling);
+    } else {
+        sibling.parentNode.insertBefore(item, sibling);
+    }
+}
+
+function toggleHomeSectionVisibility(item, button) {
+    const isActive = item.getAttribute('data-active') !== 'true';
+
+    item.setAttribute('data-active', isActive);
+    button.setAttribute('title', globalize.translate(isActive ? 'Hide' : 'Show'));
+    button.querySelector('.material-icons').className = `material-icons ${isActive ? 'visibility' : 'visibility_off'}`;
+}
+
+function onHomeSectionListClick(e) {
+    const button = dom.parentWithClass(e.target, ['btnSectionMove', 'btnSectionRemove', 'btnSectionVisibility']);
+
+    if (!button) {
+        return;
+    }
+
+    const item = dom.parentWithClass(button, 'homeSectionItem');
+
+    if (!item) {
+        return;
+    }
+
+    if (button.classList.contains('btnSectionRemove')) {
+        if (item.getAttribute('data-key') === HomeSectionKey.Genre) {
+            const checkbox = this.options.element.querySelector(`.chkHomeSectionGenre[data-genreid="${item.getAttribute('data-itemid')}"]`);
+            if (checkbox) checkbox.checked = false;
+        }
+
+        item.remove();
+        return;
+    }
+
+    if (button.classList.contains('btnSectionVisibility')) {
+        toggleHomeSectionVisibility(item, button);
+        return;
+    }
+
+    moveHomeSection(item, button.classList.contains('btnSectionDown'));
+    focusManager.focus(e.target);
+}
+
+function onSectionTypeChange() {
+    updateSectionItemSelect(this.options.element);
+}
+
+function onAddHomeSection() {
+    const context = this.options.element;
+    const key = context.querySelector('.selectHomeSectionType').value;
+
+    const section = {
+        Key: key,
+        ItemId: usesItemSelect(context, key) ? context.querySelector('.selectHomeSectionItem').value : null,
+        MaxItems: null,
+        Active: true
+    };
+
+    context.querySelector('.homeSectionList')
+        .insertAdjacentHTML('beforeend', getHomeSectionHtml(context, section));
+}
+
+function resetHomeSections(instance) {
+    const context = instance.options.element;
+    const userId = instance.options.userId;
+    const apiClient = ServerConnections.getApiClient(instance.options.serverId);
+    const api = ServerConnections.getApi(apiClient.serverId());
+
+    loading.show();
+
+    getHomeSectionsApi(api).resetHomeSectionConfig({ userId })
+        .then(() => queryClient.invalidateQueries({ queryKey: ['User', userId] }))
+        .then(() => queryClient.fetchQuery(getHomeSectionConfigQuery(api, { userId })))
+        .then(sections => {
+            renderHomeSections(context, sections);
+            toast(globalize.translate('SettingsSaved'));
+        })
+        .catch(err => {
+            console.error('[homeScreenSettings] failed to reset the home screen', err);
+        })
+        .finally(() => {
+            loading.hide();
+        });
+}
+
+function onResetHomeSections() {
+    const instance = this;
+
+    confirm({
+        title: globalize.translate('ResetHomeScreenLayout'),
+        text: globalize.translate('ConfirmResetHomeScreenLayout'),
+        confirmText: globalize.translate('Reset'),
+        primary: 'delete'
+    }).then(() => {
+        resetHomeSections(instance);
+    }).catch(() => {
+        // The dialog was dismissed
+    });
 }
 
 function getCheckboxItems(selector, context, isChecked) {
@@ -507,21 +776,19 @@ async function saveUser(context, user, userSettingsInstance, apiClient) {
 
     userSettingsInstance.set('tvhome', context.querySelector('.selectTVHomeScreen').value);
 
-    userSettingsInstance.set('homesection0', context.querySelector('#selectHomeSection1').value);
-    userSettingsInstance.set('homesection1', context.querySelector('#selectHomeSection2').value);
-    userSettingsInstance.set('homesection2', context.querySelector('#selectHomeSection3').value);
-    userSettingsInstance.set('homesection3', context.querySelector('#selectHomeSection4').value);
-    userSettingsInstance.set('homesection4', context.querySelector('#selectHomeSection5').value);
-    userSettingsInstance.set('homesection5', context.querySelector('#selectHomeSection6').value);
-    userSettingsInstance.set('homesection6', context.querySelector('#selectHomeSection7').value);
-    userSettingsInstance.set('homesection7', context.querySelector('#selectHomeSection8').value);
-    userSettingsInstance.set('homesection8', context.querySelector('#selectHomeSection9').value);
-    userSettingsInstance.set('homesection9', context.querySelector('#selectHomeSection10').value);
-
     const selectLandings = context.querySelectorAll('.selectLanding');
     for (i = 0, length = selectLandings.length; i < length; i++) {
         const selectLanding = selectLandings[i];
         userSettingsInstance.set(`landing-${selectLanding.getAttribute('data-folderid')}`, selectLanding.value);
+    }
+
+    // Display preferences are written first because saving them rewrites the home sections from
+    // the legacy layout they still carry, which would undo the layout saved here.
+    await userSettingsInstance.flushServerPreferences();
+
+    if (!context.querySelector('.homeSectionsEditor').classList.contains('hide')) {
+        await getHomeSectionsApi(ServerConnections.getApi(apiClient.serverId()))
+            .updateHomeSectionConfig(getHomeSectionsConfig(context), { userId: user.Id });
     }
 
     await apiClient.updateUserConfiguration(user.Id, user.Configuration);
@@ -542,8 +809,10 @@ function save(instance, context, userId, userSettings, apiClient, enableSaveConf
             }
 
             Events.trigger(instance, 'saved');
-        }, () => {
+        }, err => {
             loading.hide();
+            console.error('[homeScreenSettings] failed to save', err);
+            toast(globalize.translate('ErrorDefault'));
         });
     });
 }
@@ -567,6 +836,12 @@ function onSubmit(e) {
 }
 
 function onChange(e) {
+    const genreCheckbox = dom.parentWithClass(e.target, 'chkHomeSectionGenre');
+    if (genreCheckbox) {
+        toggleGenreSection(this.options.element, genreCheckbox);
+        return;
+    }
+
     const chkIncludeInMyMedia = dom.parentWithClass(e.target, 'chkIncludeInMyMedia');
     if (!chkIncludeInMyMedia) {
         return;
@@ -584,16 +859,15 @@ function onChange(e) {
 }
 
 function embed(options, self) {
-    let workingTemplate = template;
-    for (let i = 1; i <= numConfigurableSections; i++) {
-        workingTemplate = workingTemplate.replace(`{section${i}label}`, globalize.translate('LabelHomeScreenSectionValue', i));
-    }
-
-    options.element.innerHTML = globalize.translateHtml(workingTemplate, 'core');
+    options.element.innerHTML = globalize.translateHtml(template, 'core');
 
     options.element.querySelector('.viewOrderList').addEventListener('click', onSectionOrderListClick);
+    options.element.querySelector('.homeSectionList').addEventListener('click', onHomeSectionListClick.bind(self));
+    options.element.querySelector('.selectHomeSectionType').addEventListener('change', onSectionTypeChange.bind(self));
+    options.element.querySelector('.btnAddHomeSection').addEventListener('click', onAddHomeSection.bind(self));
+    options.element.querySelector('.btnResetHomeSections').addEventListener('click', onResetHomeSections.bind(self));
     options.element.querySelector('form').addEventListener('submit', onSubmit.bind(self));
-    options.element.addEventListener('change', onChange);
+    options.element.addEventListener('change', onChange.bind(self));
 
     if (options.enableSaveButton) {
         options.element.querySelector('.btnSave').classList.remove('hide');

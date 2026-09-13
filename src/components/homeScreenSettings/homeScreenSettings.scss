@@ -1,0 +1,15 @@
+.homeSectionItem[data-active="false"] .listItemBody {
+    opacity: 0.5;
+}
+
+.homeSectionItem .homeSectionMaxItems {
+    flex-shrink: 0;
+    width: 5em;
+    margin: 0 0.5em;
+    text-align: center;
+
+    @media all and (max-width: 50em) {
+        width: 3.5em;
+        margin: 0 0.25em;
+    }
+}

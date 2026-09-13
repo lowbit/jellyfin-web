@@ -1,6 +1,7 @@
 import Dashboard from '@mui/icons-material/Dashboard';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
+import Home from '@mui/icons-material/Home';
 import LibraryAdd from '@mui/icons-material/LibraryAdd';
 import Palette from '@mui/icons-material/Palette';
 import People from '@mui/icons-material/People';
@@ -82,6 +83,14 @@ const ServerDrawerSection = () => {
                 </ListItemIcon>
                 <ListItemText primary={globalize.translate('HeaderBranding')} />
             </ListItemLink>
+            <ListItem disablePadding>
+                <ListItemLink to='/dashboard/homescreen'>
+                    <ListItemIcon>
+                        <Home />
+                    </ListItemIcon>
+                    <ListItemText primary={globalize.translate('HeaderHomeScreen')} />
+                </ListItemLink>
+            </ListItem>
             <ListItem disablePadding>
                 <ListItemLink to='/dashboard/users'>
                     <ListItemIcon>

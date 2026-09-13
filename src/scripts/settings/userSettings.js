@@ -95,6 +95,24 @@ export class UserSettings {
             });
     }
 
+    /**
+     * Save any pending preferences to the server now.
+     * @return {Promise} A promise that resolves once they are saved.
+     */
+    flushServerPreferences() {
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+            this.saveTimeout = null;
+        }
+
+        if (!this.displayPrefs || !this.currentApiClient) {
+            return Promise.resolve();
+        }
+
+        return this.currentApiClient.updateDisplayPreferences(
+            DISPLAY_PREFERENCES_ID, this.displayPrefs, this.currentUserId, CLIENT_ID);
+    }
+
     // FIXME: 'appSettings.set' doesn't return any value
     /**
      * Set value of setting.
@@ -723,6 +741,7 @@ export const currentSettings = new UserSettings;
 // Wrappers for non-ES6 modules and backward compatibility
 export const setUserInfo = currentSettings.setUserInfo.bind(currentSettings);
 export const set = currentSettings.set.bind(currentSettings);
+export const flushServerPreferences = currentSettings.flushServerPreferences.bind(currentSettings);
 export const get = currentSettings.get.bind(currentSettings);
 export const serverConfig = currentSettings.serverConfig.bind(currentSettings);
 export const allowedAudioChannels = currentSettings.allowedAudioChannels.bind(currentSettings);
