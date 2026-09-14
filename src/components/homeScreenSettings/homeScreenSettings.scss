@@ -1,11 +1,3 @@
-.homeSectionGenres {
-    margin-bottom: 2em;
-}
-
-.homeSectionGenreAll {
-    margin-bottom: 1em;
-}
-
 .homeSectionItem[data-active="false"] .listItemBody {
     opacity: 0.5;
 }
@@ -20,4 +12,21 @@
         width: 3.5em;
         margin: 0 0.25em;
     }
+}
+
+.homeSectionPicker {
+    padding: 0.5em 0 1em 2.5em;
+}
+
+.homeSectionPickerAll {
+    margin: 0.5em 0;
+}
+
+.homeSectionPickerItem {
+    padding: 0;
+}
+
+.homeSectionPickerItem .homeSectionPickerCheck {
+    flex-grow: 1;
+    margin: 0;
 }

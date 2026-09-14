@@ -9,6 +9,8 @@ export interface HomeSectionsApiGetHomeSectionsRequest {
     client?: string;
     /** The number of items per section, for sections that set no limit of their own. */
     itemLimit?: number;
+    /** Only the sections with these provider keys, such as the ones a change message named. */
+    keys?: string[];
 }
 
 export interface HomeSectionsApiHomeSectionConfigRequest {
@@ -39,7 +41,8 @@ export const getHomeSectionsApi = (api: Api) => ({
     ) => request<HomeSectionDto[]>(api, {
         method: 'GET',
         url: '/HomeSections',
-        params
+        // Axios would send keys[]=, the server reads a comma separated list
+        params: { ...params, keys: params?.keys?.join(',') }
     }, options),
 
     /** Gets the kinds of section the server can build, including any from plugins. */

@@ -1,7 +1,6 @@
 
 import escapeHtml from 'escape-html';
 
-import { HomeSectionKey } from 'constants/homeSectionKey';
 import { getHomeSectionConfigQuery } from 'hooks/api/useHomeSectionConfig';
 import { getHomeSectionItemKinds, getHomeSectionItemsQuery } from 'hooks/api/useHomeSectionItems';
 import { getHomeSectionProvidersQuery } from 'hooks/api/useHomeSectionProviders';
@@ -386,9 +385,13 @@ function getHomeSectionHtml(context, section) {
     const isActive = section.Active !== false;
     const itemIds = section.ItemIds || [];
     const itemName = getSectionItemNames(context, section.Key, itemIds);
+    const hasPicker = takesSeveralItems(context, section.Key);
 
     let html = '';
 
+    // The row and, for a section that takes several items, the picker that narrows it sit in one
+    // entry so that moving the section moves both.
+    html += '<div class="homeSectionEntry">';
     html += `<div class="listItem listItem-border homeSectionItem" data-key="${escapeHtml(section.Key)}" data-itemids="${escapeHtml(itemIds.join(','))}" data-active="${isActive}">`;
 
     html += '<span class="material-icons listItemIcon dashboard" aria-hidden="true"></span>';
@@ -402,6 +405,9 @@ function getHomeSectionHtml(context, section) {
 
     html += `<input type="number" class="emby-input homeSectionMaxItems" min="1" max="100" step="1" value="${section.MaxItems ?? ''}" placeholder="${globalize.translate('Default')}" title="${globalize.translate('LabelMaxItems')}" />`;
 
+    if (hasPicker) {
+        html += `<button type="button" is="paper-icon-button-light" class="btnSectionItems autoSize" title="${globalize.translate('ChooseWhatToShow')}"><span class="material-icons tune" aria-hidden="true"></span></button>`;
+    }
     html += `<button type="button" is="paper-icon-button-light" class="btnSectionVisibility autoSize" title="${globalize.translate(isActive ? 'Hide' : 'Show')}"><span class="material-icons ${isActive ? 'visibility' : 'visibility_off'}" aria-hidden="true"></span></button>`;
     html += `<button type="button" is="paper-icon-button-light" class="btnSectionUp btnSectionMove autoSize" title="${globalize.translate('Up')}"><span class="material-icons keyboard_arrow_up" aria-hidden="true"></span></button>`;
     html += `<button type="button" is="paper-icon-button-light" class="btnSectionDown btnSectionMove autoSize" title="${globalize.translate('Down')}"><span class="material-icons keyboard_arrow_down" aria-hidden="true"></span></button>`;
@@ -409,82 +415,93 @@ function getHomeSectionHtml(context, section) {
 
     html += '</div>';
 
+    if (hasPicker) {
+        html += `<div class="homeSectionPicker hide">${getPickerHtml(context, section.Key, itemIds)}</div>`;
+    }
+
+    html += '</div>';
+
     return html;
+}
+
+/**
+ * The picker of a section that takes several items: what is ticked gets a row, listed first in
+ * row order with arrows to change it, then everything else on offer.
+ */
+function getPickerHtml(context, key, itemIds) {
+    const offered = getOfferedItems(context, key);
+    const chosen = itemIds.map(id => offered.find(item => item.Id === id)).filter(Boolean);
+    const rest = offered.filter(item => !itemIds.includes(item.Id));
+
+    const getRowHtml = (item, index) => {
+        const isChosen = index >= 0;
+        let html = `<div class="listItem homeSectionPickerItem" data-itemid="${item.Id}">`;
+        html += `<label class="checkboxContainer homeSectionPickerCheck"><input type="checkbox" is="emby-checkbox" class="chkHomeSectionPickerItem"${isChosen ? ' checked="checked"' : ''}/><span>${escapeHtml(item.Name)}</span></label>`;
+        if (isChosen) {
+            html += `<button type="button" is="paper-icon-button-light" class="btnPickerUp autoSize" title="${globalize.translate('Up')}"${index === 0 ? ' disabled' : ''}><span class="material-icons keyboard_arrow_up" aria-hidden="true"></span></button>`;
+            html += `<button type="button" is="paper-icon-button-light" class="btnPickerDown autoSize" title="${globalize.translate('Down')}"${index === chosen.length - 1 ? ' disabled' : ''}><span class="material-icons keyboard_arrow_down" aria-hidden="true"></span></button>`;
+        }
+        html += '</div>';
+        return html;
+    };
+
+    let html = '';
+    html += `<label class="checkboxContainer homeSectionPickerAll"><input type="checkbox" is="emby-checkbox" class="chkHomeSectionPickerAll"${hasEveryOfferedItem(context, key, itemIds) ? ' checked="checked"' : ''}/><span>${globalize.translate('SelectAll')}</span></label>`;
+    html += chosen.map(getRowHtml).join('');
+    html += rest.map(item => getRowHtml(item, -1)).join('');
+    html += `<div class="fieldDescription checkboxFieldDescription">${globalize.translate('HomeScreenSectionItemsHelp')}</div>`;
+    return html;
+}
+
+/** Writes a section's items back to its row and redraws the caption and the picker. */
+function setSectionItemIds(context, item, itemIds) {
+    const key = item.getAttribute('data-key');
+
+    item.setAttribute('data-itemids', itemIds.join(','));
+    item.querySelector('.listItemBodyText.secondary')?.remove();
+
+    const name = getSectionItemNames(context, key, itemIds);
+    if (name) {
+        item.querySelector('.listItemBody')
+            .insertAdjacentHTML('beforeend', `<div class="listItemBodyText secondary">${escapeHtml(name)}</div>`);
+    }
+
+    const picker = item.parentNode.querySelector('.homeSectionPicker');
+    if (picker) {
+        picker.innerHTML = getPickerHtml(context, key, itemIds);
+    }
+}
+
+/** Adds or removes one item of a section that takes several; an added one goes last. */
+function togglePickerItem(context, item, itemId, isChosen) {
+    const itemIds = getSectionItemIds(item).filter(id => id !== itemId);
+
+    if (isChosen) {
+        itemIds.push(itemId);
+    }
+
+    setSectionItemIds(context, item, itemIds);
+}
+
+/** Moves one of a section's items a step up or down its rows. */
+function movePickerItem(context, item, itemId, offset) {
+    const itemIds = getSectionItemIds(item);
+    const index = itemIds.indexOf(itemId);
+    const target = index + offset;
+
+    if (index < 0 || target < 0 || target >= itemIds.length) {
+        return;
+    }
+
+    itemIds.splice(index, 1);
+    itemIds.splice(target, 0, itemId);
+    setSectionItemIds(context, item, itemIds);
 }
 
 function renderHomeSections(context, sections) {
     context.querySelector('.homeSectionList').innerHTML = sections
         .map(section => getHomeSectionHtml(context, section))
         .join('');
-}
-
-/** Redraws the genre checkboxes against the genre row as it now stands. */
-function refreshGenreCheckboxes(context) {
-    const kind = getProvider(context, HomeSectionKey.Genre)?.ItemKind;
-    renderGenreCheckboxes(context, context.homeSectionItems?.[kind] || []);
-}
-
-/** The row the genre checkboxes narrow, being the genre section in the layout. */
-function getGenreSectionItem(context) {
-    return context.querySelector(`.homeSectionItem[data-key="${HomeSectionKey.Genre}"]`);
-}
-
-function renderGenreCheckboxes(context, genres) {
-    const section = getGenreSectionItem(context);
-    const chosen = section ? getSectionItemIds(section) : [];
-
-    const html = genres.map(genre => {
-        const checked = chosen.includes(genre.Id) ? ' checked="checked"' : '';
-
-        return `<label><input type="checkbox" is="emby-checkbox" class="chkHomeSectionGenre" data-genreid="${genre.Id}" id="chkHomeSectionGenre${genre.Id}"${checked}/><span>${escapeHtml(genre.Name)}</span></label>`;
-    }).join('');
-
-    context.querySelector('.homeSectionGenreList').innerHTML = html ? `<div class="checkboxList checkboxList-verticalwrap">${html}</div>` : '';
-    context.querySelector('.chkHomeSectionGenreAll').checked = hasEveryOfferedItem(context, HomeSectionKey.Genre, chosen);
-
-    // Nothing to narrow until the layout has a genre row.
-    context.querySelector('.homeSectionGenres').classList.toggle('hide', !html || !section);
-}
-
-/** Writes a genre row's list back to its row in the layout and redraws what depends on it. */
-function setGenreItemIds(context, itemIds) {
-    const section = getGenreSectionItem(context);
-    if (!section) {
-        return;
-    }
-
-    section.setAttribute('data-itemids', itemIds.join(','));
-    section.querySelector('.listItemBodyText.secondary')?.remove();
-
-    const name = getSectionItemNames(context, HomeSectionKey.Genre, itemIds);
-    if (name) {
-        section.querySelector('.listItemBody')
-            .insertAdjacentHTML('beforeend', `<div class="listItemBodyText secondary">${escapeHtml(name)}</div>`);
-    }
-
-    refreshGenreCheckboxes(context);
-}
-
-/** Adds or removes one genre from the genre row. */
-function toggleGenre(context, checkbox) {
-    const section = getGenreSectionItem(context);
-    if (!section) {
-        return;
-    }
-
-    const itemId = checkbox.getAttribute('data-genreid');
-    const itemIds = getSectionItemIds(section).filter(id => id !== itemId);
-
-    if (checkbox.checked) {
-        itemIds.push(itemId);
-    }
-
-    setGenreItemIds(context, itemIds);
-}
-
-/** Every genre on offer, or none. */
-function toggleAllGenres(context, checkbox) {
-    setGenreItemIds(context, checkbox.checked ? getOfferedItems(context, HomeSectionKey.Genre).map(item => item.Id) : []);
 }
 
 function renderSectionTypeOptions(context) {
@@ -523,7 +540,6 @@ function renderHomeSectionSettings(context, sections, providers, sectionItems) {
     context.querySelector('.homeSectionsEditor').classList.remove('hide');
     renderSectionTypeOptions(context);
     renderHomeSections(context, sections);
-    renderGenreCheckboxes(context, sectionItems[getProvider(context, HomeSectionKey.Genre)?.ItemKind] || []);
     updateSectionItemSelect(context);
 }
 
@@ -712,7 +728,17 @@ function toggleHomeSectionVisibility(item, button) {
 }
 
 function onHomeSectionListClick(e) {
-    const button = dom.parentWithClass(e.target, ['btnSectionMove', 'btnSectionRemove', 'btnSectionVisibility']);
+    const context = this.options.element;
+    const pickerButton = dom.parentWithClass(e.target, ['btnPickerUp', 'btnPickerDown']);
+
+    if (pickerButton) {
+        const pickerItem = dom.parentWithClass(pickerButton, 'homeSectionPickerItem');
+        const item = dom.parentWithClass(pickerButton, 'homeSectionEntry').querySelector('.homeSectionItem');
+        movePickerItem(context, item, pickerItem.getAttribute('data-itemid'), pickerButton.classList.contains('btnPickerDown') ? 1 : -1);
+        return;
+    }
+
+    const button = dom.parentWithClass(e.target, ['btnSectionMove', 'btnSectionRemove', 'btnSectionVisibility', 'btnSectionItems']);
 
     if (!button) {
         return;
@@ -725,14 +751,7 @@ function onHomeSectionListClick(e) {
     }
 
     if (button.classList.contains('btnSectionRemove')) {
-        const isGenres = item.getAttribute('data-key') === HomeSectionKey.Genre;
-
-        item.remove();
-
-        if (isGenres) {
-            refreshGenreCheckboxes(this.options.element);
-        }
-
+        item.parentNode.remove();
         return;
     }
 
@@ -741,7 +760,12 @@ function onHomeSectionListClick(e) {
         return;
     }
 
-    moveHomeSection(item, button.classList.contains('btnSectionDown'));
+    if (button.classList.contains('btnSectionItems')) {
+        item.parentNode.querySelector('.homeSectionPicker').classList.toggle('hide');
+        return;
+    }
+
+    moveHomeSection(item.parentNode, button.classList.contains('btnSectionDown'));
     focusManager.focus(e.target);
 }
 
@@ -753,11 +777,19 @@ function onAddHomeSection() {
     const context = this.options.element;
     const key = context.querySelector('.selectHomeSectionType').value;
 
-    // A section that takes several items starts with all of them, so adding it needs no more.
+    // A section that takes several items starts with all of them, so adding it needs no more,
+    // and is on the layout once: adding it again opens what it has.
     let itemIds = [];
     if (usesItemSelect(context, key)) {
         itemIds = [ context.querySelector('.selectHomeSectionItem').value ];
     } else if (takesSeveralItems(context, key)) {
+        const existing = context.querySelector(`.homeSectionItem[data-key="${key}"]`);
+        if (existing) {
+            existing.parentNode.querySelector('.homeSectionPicker').classList.remove('hide');
+            focusManager.focus(existing.querySelector('.btnSectionItems'));
+            return;
+        }
+
         itemIds = getOfferedItems(context, key).map(item => item.Id);
     }
 
@@ -770,10 +802,6 @@ function onAddHomeSection() {
 
     context.querySelector('.homeSectionList')
         .insertAdjacentHTML('beforeend', getHomeSectionHtml(context, section));
-
-    if (key === HomeSectionKey.Genre) {
-        refreshGenreCheckboxes(context);
-    }
 }
 
 function resetHomeSections(instance) {
@@ -914,15 +942,21 @@ function onSubmit(e) {
 }
 
 function onChange(e) {
-    const allGenresCheckbox = dom.parentWithClass(e.target, 'chkHomeSectionGenreAll');
-    if (allGenresCheckbox) {
-        toggleAllGenres(this.options.element, allGenresCheckbox);
+    const context = this.options.element;
+
+    const allCheckbox = dom.parentWithClass(e.target, 'chkHomeSectionPickerAll');
+    if (allCheckbox) {
+        const item = dom.parentWithClass(allCheckbox, 'homeSectionEntry').querySelector('.homeSectionItem');
+        const itemIds = allCheckbox.checked ? getOfferedItems(context, item.getAttribute('data-key')).map(offered => offered.Id) : [];
+        setSectionItemIds(context, item, itemIds);
         return;
     }
 
-    const genreCheckbox = dom.parentWithClass(e.target, 'chkHomeSectionGenre');
-    if (genreCheckbox) {
-        toggleGenre(this.options.element, genreCheckbox);
+    const itemCheckbox = dom.parentWithClass(e.target, 'chkHomeSectionPickerItem');
+    if (itemCheckbox) {
+        const item = dom.parentWithClass(itemCheckbox, 'homeSectionEntry').querySelector('.homeSectionItem');
+        const pickerItem = dom.parentWithClass(itemCheckbox, 'homeSectionPickerItem');
+        togglePickerItem(context, item, pickerItem.getAttribute('data-itemid'), itemCheckbox.checked);
         return;
     }
 

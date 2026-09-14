@@ -1,3 +1,4 @@
+import type { BaseItemDto } from '@jellyfin/sdk/lib/generated-client/models/base-item-dto';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -10,11 +11,9 @@ import React, { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useSt
 
 import { useDefaultHomeSections } from 'apps/dashboard/features/homescreen/api/useDefaultHomeSections';
 import { useUpdateDefaultHomeSections } from 'apps/dashboard/features/homescreen/api/useUpdateDefaultHomeSections';
-import HomeSectionGenres from 'apps/dashboard/features/homescreen/components/HomeSectionGenres';
 import HomeSectionListItem from 'apps/dashboard/features/homescreen/components/HomeSectionListItem';
 import Loading from 'components/loading/LoadingComponent';
 import Page from 'components/Page';
-import { HomeSectionKey } from 'constants/homeSectionKey';
 import { getHomeSectionItemKinds, useHomeSectionItems } from 'hooks/api/useHomeSectionItems';
 import { useHomeSectionProviders } from 'hooks/api/useHomeSectionProviders';
 import globalize from 'lib/globalize';
@@ -57,8 +56,6 @@ export const Component = () => {
         providers?.find(provider => provider.Key === key)
     ), [ providers ]);
 
-    const genreKind = getProvider(HomeSectionKey.Genre)?.ItemKind;
-
     // What the server can build, less anything bound to a kind of item this server has none of.
     const availableProviders = useMemo(() => (providers ?? []).filter(provider => (
         !provider.ItemKind || sectionItems?.[provider.ItemKind]?.length
@@ -70,17 +67,12 @@ export const Component = () => {
         }
     }, [ availableProviders, newKey ]);
 
-    const genres = useMemo(() => (genreKind && sectionItems?.[genreKind]) || [], [ genreKind, sectionItems ]);
-
-    // The genre row narrowed by the checkboxes, and the genres it is narrowed to. With the row
-    // absent there is nothing to narrow; with it present and nothing ticked it shows every genre.
-    const genreSectionIndex = useMemo(() => (
-        sections.findIndex(section => section.Key === HomeSectionKey.Genre)
-    ), [ sections ]);
-
-    const chosenGenreIds = useMemo(() => new Set(
-        genreSectionIndex < 0 ? [] : sections[genreSectionIndex].ItemIds
-    ), [ genreSectionIndex, sections ]);
+    /** What a section that takes several items can be bound to; nothing for any other. */
+    const getPickerItems = useCallback((key: string) => {
+        const provider = getProvider(key);
+        if (!provider?.ItemKind || !provider.AllowsMultipleItems) return undefined;
+        return sectionItems?.[provider.ItemKind] ?? [];
+    }, [ getProvider, sectionItems ]);
 
     const newProvider = getProvider(newKey);
     const newProviderItems = useMemo(() => (
@@ -139,17 +131,24 @@ export const Component = () => {
         )));
     }, []);
 
-    const onToggleGenre = useCallback((genreId: string, isChosen: boolean) => {
-        setSections(current => current.map(section => withGenre(section, genreId, isChosen)));
+    const updateSection = useCallback((index: number, update: (section: EditableHomeSection) => EditableHomeSection) => {
+        setSections(current => current.map((section, i) => (i === index ? update(section) : section)));
     }, []);
 
-    const onToggleAllGenres = useCallback((chooseAll: boolean) => {
-        const everyGenre = genres.map(genre => genre.Id).filter((id): id is string => !!id);
+    const onToggleItem = useCallback((index: number, itemId: string, isChosen: boolean) => {
+        updateSection(index, section => withItemToggled(section, itemId, isChosen));
+    }, [ updateSection ]);
 
-        setSections(current => current.map(section => (
-            section.Key === HomeSectionKey.Genre ? { ...section, ItemIds: chooseAll ? everyGenre : [] } : section
-        )));
-    }, [ genres ]);
+    const onToggleAllItems = useCallback((index: number, chooseAll: boolean) => {
+        updateSection(index, section => ({
+            ...section,
+            ItemIds: chooseAll ? getItemIds(getPickerItems(section.Key) ?? []) : []
+        }));
+    }, [ getPickerItems, updateSection ]);
+
+    const onMoveItem = useCallback((index: number, itemId: string, offset: number) => {
+        updateSection(index, section => withItemMoved(section, itemId, offset));
+    }, [ updateSection ]);
 
     const onNewKeyChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
         setNewKey(event.target.value);
@@ -160,24 +159,29 @@ export const Component = () => {
     }, []);
 
     const onAdd = useCallback(() => {
-        // A section that takes several items starts with all of them, so adding it needs no more.
+        // A section that takes several items starts with all of them, so adding it needs no more,
+        // and is on the layout once.
         let itemIds: string[] = [];
         if (newProvider?.ItemKind && newProvider.AllowsMultipleItems) {
-            itemIds = newProviderItems.map(item => item.Id).filter((id): id is string => !!id);
+            itemIds = getItemIds(newProviderItems);
         } else if (newProvider?.ItemKind) {
             itemIds = [ newItemId ];
         }
 
-        setSections(current => [
-            ...current,
-            {
-                EditorId: createEditorId(),
-                Key: newKey,
-                ItemIds: itemIds,
-                MaxItems: null,
-                Active: true
-            }
-        ]);
+        setSections(current => {
+            if (newProvider?.AllowsMultipleItems && current.some(section => section.Key === newKey)) return current;
+
+            return [
+                ...current,
+                {
+                    EditorId: createEditorId(),
+                    Key: newKey,
+                    ItemIds: itemIds,
+                    MaxItems: null,
+                    Active: true
+                }
+            ];
+        });
     }, [ createEditorId, newItemId, newKey, newProvider, newProviderItems ]);
 
     const onSave = useCallback(() => {
@@ -223,15 +227,6 @@ export const Component = () => {
                                 <Alert severity='error'>
                                     {globalize.translate('ErrorDefault')}
                                 </Alert>
-                            )}
-
-                            {genreSectionIndex >= 0 && (
-                                <HomeSectionGenres
-                                    genres={genres}
-                                    chosenIds={chosenGenreIds}
-                                    onToggle={onToggleGenre}
-                                    onToggleAll={onToggleAllGenres}
-                                />
                             )}
 
                             <Stack direction='row' spacing={2} alignItems='center'>
@@ -281,12 +276,16 @@ export const Component = () => {
                                         index={index}
                                         name={getProviderName(getProvider(section.Key), section.Key)}
                                         itemName={getSectionItemName(section)}
+                                        pickerItems={getPickerItems(section.Key)}
                                         isFirst={index === 0}
                                         isLast={index === sections.length - 1}
                                         onMove={onMove}
                                         onRemove={onRemove}
                                         onToggleActive={onToggleActive}
                                         onMaxItemsChange={onMaxItemsChange}
+                                        onToggleItem={onToggleItem}
+                                        onToggleAllItems={onToggleAllItems}
+                                        onMoveItem={onMoveItem}
                                     />
                                 ))}
                             </List>
@@ -305,12 +304,26 @@ export const Component = () => {
     );
 };
 
-/** Adds or removes one genre from the genre row, leaving every other row alone. */
-function withGenre(section: EditableHomeSection, genreId: string, isChosen: boolean) {
-    if (section.Key !== HomeSectionKey.Genre) return section;
+function getItemIds(items: BaseItemDto[]) {
+    return items.map(item => item.Id).filter((id): id is string => !!id);
+}
 
-    const itemIds = section.ItemIds.filter(id => id !== genreId);
-    return { ...section, ItemIds: isChosen ? [ ...itemIds, genreId ] : itemIds };
+/** Adds or removes one item of a section that takes several; an added one goes last. */
+function withItemToggled(section: EditableHomeSection, itemId: string, isChosen: boolean) {
+    const itemIds = section.ItemIds.filter(id => id !== itemId);
+    return { ...section, ItemIds: isChosen ? [ ...itemIds, itemId ] : itemIds };
+}
+
+/** Moves one of a section's items a step up or down its rows. */
+function withItemMoved(section: EditableHomeSection, itemId: string, offset: number) {
+    const from = section.ItemIds.indexOf(itemId);
+    const to = from + offset;
+    if (from < 0 || to < 0 || to >= section.ItemIds.length) return section;
+
+    const itemIds = [ ...section.ItemIds ];
+    itemIds.splice(from, 1);
+    itemIds.splice(to, 0, itemId);
+    return { ...section, ItemIds: itemIds };
 }
 
 /** A row from a plugin that has since been removed still has to be shown as something. */

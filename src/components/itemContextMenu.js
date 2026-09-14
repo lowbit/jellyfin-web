@@ -6,6 +6,7 @@ import { ServerConnections } from 'lib/jellyfin-apiclient';
 
 import browser from '../scripts/browser';
 import { copy } from '../scripts/clipboard';
+import { getHomePinState, toggleHomePin } from './homesections/homeSectionPin';
 import dom from '../utils/dom';
 import globalize from '../lib/globalize';
 import actionsheet from './actionSheet/actionSheet';
@@ -127,6 +128,20 @@ export async function getCommands(options) {
         commands.push({
             divider: true
         });
+    }
+
+    // A collection or genre can sit on the home screen as a row of its own.
+    if (options.pin !== false && user && !itemHelper.isLocalItem(item)) {
+        const isPinned = await getHomePinState(ServerConnections.getApi(item.ServerId), user.Id, item)
+            .catch(() => undefined);
+
+        if (isPinned !== undefined) {
+            commands.push({
+                name: globalize.translate(isPinned ? 'UnpinFromHome' : 'PinToHome'),
+                id: 'togglehomepin',
+                icon: 'push_pin'
+            });
+        }
     }
 
     if (!browser.tv) {
@@ -648,6 +663,12 @@ function executeCommand(item, id, options) {
                 }).then(function () {
                     getResolveFunction(resolve, id, true)();
                 });
+                break;
+            case 'togglehomepin':
+                toggleHomePin(api, apiClient.getCurrentUserId(), item).then(isPinned => {
+                    toast(globalize.translate(isPinned ? 'PinnedToHome' : 'UnpinnedFromHome'));
+                    getResolveFunction(resolve, id)();
+                }).catch(reject);
                 break;
             case 'canceltimer':
                 deleteTimer(apiClient, item, resolve, id);

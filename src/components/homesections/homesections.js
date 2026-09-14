@@ -45,9 +45,10 @@ function fetchSections(api, params) {
     return queryClient.fetchQuery({ ...getHomeSectionsQuery(api, params), staleTime: 0 });
 }
 
-function getSectionItemsFn(api, params, sectionId) {
+function getSectionItemsFn(container, api, params, sectionId) {
     return function () {
-        return fetchSections(api, params)
+        // During a refresh of some keys the rows read the response for those keys only
+        return (container.pendingSections || fetchSections(api, params))
             .then(sections => sections.find(section => section.Id === sectionId)?.Items || []);
     };
 }
@@ -75,9 +76,7 @@ function renderNoLibrariesMessage(elem, user) {
     }
 }
 
-function renderSection(elem, api, serverId, params, section, userSettings, options) {
-    const fetchItems = getSectionItemsFn(api, params, section.Id);
-
+function renderSection(elem, serverId, section, fetchItems, userSettings, options) {
     switch (section.Key) {
         case HomeSectionKey.SmallLibraryTiles:
             loadLibraryTiles(elem, section, fetchItems, options);
@@ -106,9 +105,11 @@ function renderSections(elem, api, serverId, params, sections, userSettings) {
     // The rows that are on screen, so a change to the layout can be told apart from a change to
     // what the rows contain.
     elem.homeSectionIds = sections.map(section => section.Id);
+    elem.homeSectionKeys = sections.map(section => section.Key);
 
     sections.forEach((section, index) => {
-        renderSection(elem.querySelector('.section' + index), api, serverId, params, section, userSettings, options);
+        const fetchItems = getSectionItemsFn(elem, api, params, section.Id);
+        renderSection(elem.querySelector('.section' + index), serverId, section, fetchItems, userSettings, options);
     });
 }
 
@@ -155,6 +156,7 @@ export function loadSections(elem, apiClient, user, userSettings) {
         .then(sections => {
             if (!sections.length) {
                 elem.homeSectionIds = [];
+                elem.homeSectionKeys = [];
 
                 // The server drops empty rows, so a user with no libraries gets nothing back.
                 return fetchUserViews(api, params.userId).then(userViews => {
@@ -188,11 +190,43 @@ function refreshRows(elem, staleKeys) {
 }
 
 /**
+ * Refetches only the sections of the stale keys and refreshes their rows in place from that
+ * response, instead of downloading the whole screen.
+ * @param {HTMLElement} elem The sections container.
+ * @param {Object} api The api instance.
+ * @param {Object} params The section request parameters.
+ * @param {Array<string>} staleKeys The provider keys that went stale.
+ * @returns {Promise<boolean>} False when those keys now have other rows than the screen shows.
+ */
+function refreshStaleSections(elem, api, params, staleKeys) {
+    const renderedIds = elem.homeSectionIds || [];
+    const renderedKeys = elem.homeSectionKeys || [];
+    const staleIds = renderedIds.filter((id, index) => staleKeys.includes(renderedKeys[index]));
+
+    return fetchSections(api, { ...params, keys: staleKeys })
+        .then(sections => {
+            const ids = sections.map(section => section.Id);
+            if (ids.length !== staleIds.length || ids.some((id, index) => id !== staleIds[index])) {
+                return false;
+            }
+
+            elem.pendingSections = Promise.resolve(sections);
+
+            return refreshRows(elem, staleKeys)
+                .then(() => true)
+                .finally(() => {
+                    elem.pendingSections = null;
+                });
+        });
+}
+
+/**
  * Brings the screen up to date after the server said rows went stale.
  *
- * Stale rows are refreshed in place, so focus and scroll position survive. The layout is checked
- * as well, because a provider that expands to several rows can gain or lose one when its data
- * changes, and then the screen is built again.
+ * Stale rows are refreshed in place, so focus and scroll position survive. When only some keys
+ * went stale only their sections are fetched. The layout is checked as well, because a provider
+ * that expands to several rows can gain or lose one when its data changes, and then the screen is
+ * built again.
  *
  * @param {HTMLElement} elem The sections container.
  * @param {Object} apiClient The api client of the server the sections belong to.
@@ -205,6 +239,11 @@ export function refreshSections(elem, apiClient, user, userSettings, staleKeys =
     const api = ServerConnections.getApi(apiClient.serverId());
     const params = getSectionParams(apiClient, user);
     const renderedIds = elem.homeSectionIds || [];
+
+    if (staleKeys?.length) {
+        return refreshStaleSections(elem, api, params, staleKeys)
+            .then(isCurrent => isCurrent || loadSections(elem, apiClient, user, userSettings));
+    }
 
     // Started before the sections are read, so both share the one request.
     const refreshed = refreshRows(elem, staleKeys);
@@ -234,6 +273,8 @@ export function destroySections(elem) {
     }
 
     elem.homeSectionIds = null;
+    elem.homeSectionKeys = null;
+    elem.pendingSections = null;
     elem.innerHTML = '';
 }
 
